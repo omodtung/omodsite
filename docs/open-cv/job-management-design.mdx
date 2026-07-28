@@ -1,0 +1,98 @@
+---
+sidebar_position: 1
+---
+
+# Job & Employer Management Design
+
+This document outlines the design for job posting and management functionalities within the microservices architecture.
+
+## 1. Đăng Tuyển Công Việc (Job Posting) - Ưu tiên hàng đầu
+
+Đây là chức năng cốt lõi cho nhà tuyển dụng.
+
+### portal-employer-service (Hoặc có thể xem xét một JobPostingService riêng nếu muốn phân tách rõ ràng hơn)
+
+* **Endpoint API:** `POST /api/employer/jobs`
+* **Mô tả:** Cho phép nhà tuyển dụng đăng một công việc mới.
+* **Request Body:** Cần một DTO (Data Transfer Object) chứa thông tin chi tiết về công việc (ví dụ: `CreateJobRequest`).
+    * `jobTitle`: string
+    * `description`: string
+    * `location`: string
+    * `employmentType`: string (Full Time, Part Time, Freelancer, Temporary)
+    * `salaryMin`: number
+    * `salaryMax`: number
+    * `experienceLevel`: string (Fresh, 1 Year, 2 Year, ...)
+    * `categoryIds`: [UUID] (IDs của các danh mục liên quan)
+    * `applicationDeadline`: LocalDate
+    * `externalApplicationUrl`: string (tùy chọn)
+* **Logic:**
+    1. Xác thực dữ liệu đầu vào và thông tin nhà tuyển dụng từ ngữ cảnh bảo mật.
+    2. **Cách tiếp cận ưu tiên (Event-Driven):** Gửi một sự kiện (ví dụ: `JobPostedEvent`) tới một Message Broker (như ActiveMQ hoặc SQS). Sự kiện này sẽ chứa tất cả thông tin công việc và `employerId`.
+    3. **Cách tiếp cận thay thế (Direct API Call):** Gọi trực tiếp endpoint tạo công việc của `portal-job-service` (ví dụ: `POST /api/v1/jobs`).
+
+### portal-job-service (Phản ứng với việc đăng tuyển)
+
+* **Bộ lắng nghe sự kiện (nếu dùng Event-Driven):**
+    * Implement một Message Listener (trong module `job-jms` hoặc `job-sqs`) để lắng nghe `JobPostedEvent`.
+    * Khi nhận được sự kiện, trích xuất thông tin công việc và gọi `JobService` để tạo `Job` entity mới trong cơ sở dữ liệu của `portal-job-service`.
+* **Endpoint API (nếu dùng Direct API Call):**
+    * Endpoint `POST /api/v1/jobs` hiện tại chấp nhận `Job` entity trực tiếp. Có thể cần điều chỉnh để chấp nhận một `CreateJobRequest` DTO rõ ràng hơn và thực hiện ánh xạ sang `Job` entity.
+
+## 2. Quản Lý Công Việc Đã Đăng (Manage Posted Jobs)
+
+Cho phép nhà tuyển dụng xem, chỉnh sửa hoặc vô hiệu hóa các công việc họ đã đăng.
+
+* **Endpoint API:**
+    * `GET /api/employer/jobs`: Liệt kê tất cả các công việc do nhà tuyển dụng hiện tại đăng.
+        * **Logic:** Gọi đến `portal-job-service` để lấy danh sách công việc theo `employerId`. Có thể cần một endpoint mới trong `portal-job-service` như `GET /api/v1/jobs/by-employer/{employerId}` hoặc điều chỉnh `POST /api/v1/jobs/search` để hỗ trợ lọc theo `employerId`.
+    * `PUT /api/employer/jobs/{jobId}`: Cập nhật thông tin của một công việc cụ thể.
+        * **Logic:** Tương tự như đăng tuyển, có thể gửi `JobUpdatedEvent` hoặc gọi trực tiếp `PUT /api/v1/jobs/{jobId}` của `portal-job-service`.
+    * `DELETE /api/employer/jobs/{jobId}` (hoặc thay đổi trạng thái): Vô hiệu hóa/xóa công việc.
+        * **Logic:** Gửi `JobDeactivatedEvent` hoặc gọi trực tiếp `DELETE /api/v1/jobs/{jobId}` (hoặc một endpoint `PUT /api/v1/jobs/{jobId}/status` để cập nhật trạng thái) của `portal-job-service`.
+
+## 3. Quản Lý Ứng Viên Cho Công Việc (Applicant Management)
+
+Sau khi công việc được đăng, nhà tuyển dụng cần xem xét các ứng viên.
+
+* **Endpoint API:**
+    * `GET /api/employer/jobs/{jobId}/applicants`: Liệt kê tất cả ứng viên đã ứng tuyển vào một công việc cụ thể.
+        * **Logic:** `EmployerService` sẽ cần tương tác với `CandidateService` và/hoặc `JobService` để lấy thông tin về các ứng viên và đơn ứng tuyển. `JobAppliedEvent` đã được mô tả trong bộ nhớ, nhưng cần một cơ chế để truy vấn các đơn ứng tuyển đã được lưu trữ (có thể trong `CandidateService` hoặc `JobService` nếu nó lưu trữ đơn ứng tuyển).
+    * `GET /api/employer/applicants/{applicationId}`: Xem chi tiết một đơn ứng tuyển và hồ sơ ứng viên.
+        * **Logic:** Tương tác với `CandidateService` để lấy chi tiết hồ sơ ứng viên.
+    * `PUT /api/employer/applicants/{applicationId}/status`: Cập nhật trạng thái của đơn ứng tuyển (ví dụ: `Reviewed`, `Interview Scheduled`, `Rejected`, `Hired`).
+        * **Logic:** Gửi sự kiện `ApplicationStatusUpdatedEvent` hoặc gọi API của `CandidateService` để cập nhật trạng thái đơn ứng tuyển.
+
+## 4. Nâng Cấp Quản Lý Hồ Sơ Công Ty (Enhanced Company Profile Management)
+
+Mặc dù `createCompany` và `updateCompany` đã tồn tại, có thể cần mở rộng.
+
+* **Endpoint API:**
+    * `GET /api/companies/{companyId}`: Lấy thông tin chi tiết về công ty. (Có thể đã được bao gồm nếu `createCompany` trả về đủ thông tin, nhưng cần một endpoint `GET` rõ ràng).
+    * **Mô tả:** Cần bổ sung các trường thông tin cho `Company` entity (ví dụ: `industry`, `companySize`, `missionStatement`, `socialMediaLinks`, `logoUrl`) và cập nhật các DTO, logic trong `EmployerProfileService` để hỗ trợ các trường này.
+
+## Tóm tắt các Endpoint Backend cần thêm
+
+### Trong `portal-employer-service`:
+
+* `POST /api/employer/jobs` (đăng công việc mới)
+* `GET /api/employer/jobs` (liệt kê công việc đã đăng của nhà tuyển dụng)
+* `PUT /api/employer/jobs/{jobId}` (cập nhật công việc đã đăng)
+* `DELETE /api/employer/jobs/{jobId}` (hoặc `PUT /api/employer/jobs/{jobId}/status` để vô hiệu hóa)
+* `GET /api/employer/jobs/{jobId}/applicants` (liệt kê ứng viên cho công việc)
+* `GET /api/employer/applicants/{applicationId}` (xem chi tiết đơn ứng tuyển/ứng viên)
+* `PUT /api/employer/applicants/{applicationId}/status` (cập nhật trạng thái đơn ứng tuyển)
+* `GET /api/companies/{companyId}` (lấy chi tiết hồ sơ công ty)
+
+### Trong `portal-job-service` (điều chỉnh hoặc bổ sung):
+
+* Điều chỉnh `POST /api/v1/jobs` để chấp nhận DTO rõ ràng hơn hoặc thêm cơ chế lắng nghe sự kiện.
+* `GET /api/v1/jobs/by-employer/{employerId}` (để hỗ trợ `GET /api/employer/jobs`)
+* `PUT /api/v1/jobs/{jobId}` (để cập nhật công việc)
+* `DELETE /api/v1/jobs/{jobId}` (hoặc cập nhật trạng thái công việc)
+* Các endpoint/logic liên quan đến đơn ứng tuyển nếu `portal-job-service` là nơi lưu trữ chúng.
+
+## Lưu ý quan trọng
+
+* **Bảo mật:** Đảm bảo mỗi endpoint có cơ chế xác thực và ủy quyền phù hợp để chỉ nhà tuyển dụng có quyền mới có thể truy cập và thao tác.
+* **Truyền thông giữa các Service:** Việc sử dụng các sự kiện (event-driven architecture) là cách tiếp cận tốt nhất để duy trì sự độc lập giữa các microservices (`EmployerService`, `JobService`, `CandidateService`, `NotificationService`).
+* **DTOs:** Luôn sử dụng DTO cho dữ liệu đầu vào và đầu ra của API để tách biệt giữa API contract và internal domain model.
