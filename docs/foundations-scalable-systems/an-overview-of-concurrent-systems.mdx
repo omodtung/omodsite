@@ -1,0 +1,324 @@
+---
+sidebar_position: 2
+---
+
+# An Overview of Concurrent Systems
+
+Concurrent systems allow multiple tasks to progress in overlapping time intervals, increasing efficiency and responsiveness. Understanding their foundations is crucial for building scalable, high-performance applications.
+
+## Trạng Thái Đua (Race Conditions)
+
+Việc thực thi **không xác định (nondeterministic)** của các luồng (threads) có nghĩa là các câu lệnh mã tạo nên luồng đó sẽ:
+
+* Thực thi một cách tuần tự đúng như định nghĩa bên trong mỗi luồng.
+* Có thể bị **gối lên nhau (overlapped)** theo bất kỳ thứ tự nào giữa các luồng với nhau. Điều này là do số lượng câu lệnh được thực thi trong mỗi khoảng thời gian dành cho luồng do bộ điều phối (scheduler) quyết định.
+
+Vì vậy, khi nhiều luồng được thực thi trên một bộ xử lý đơn, sự thực thi của chúng sẽ bị đan xen vào nhau. CPU thực hiện một vài bước từ luồng này, sau đó chuyển sang thực hiện một vài bước từ luồng khác, và cứ tiếp tục như vậy. Nếu chúng ta chạy trên một CPU đa nhân (multicore), chúng ta có thể chạy mỗi luồng trên một nhân. Tuy nhiên, các câu lệnh của từng luồng vẫn bị đan xen một cách không xác định.
+
+Nếu mỗi luồng chỉ đơn giản là làm việc riêng của nó và hoàn toàn độc lập, đây sẽ không phải là vấn đề. Mỗi luồng chạy cho đến khi kết thúc — mọi thứ rất đơn giản! Vậy tại sao các luồng này lại bị coi là phức tạp?
+
+Đáng tiếc là, các luồng hoàn toàn độc lập **không phải** là cách hầu hết các hệ thống đa luồng hoạt động. Nhiều luồng thường **chia sẻ dữ liệu toàn cục (global data)** trong cùng một tiến trình (trong Java, đây là dữ liệu toàn cục và dữ liệu tĩnh - `static`).
+
+Các luồng có thể sử dụng cấu trúc dữ liệu chung để phối hợp công việc và truyền trạng thái cho nhau.
+
+> **Ví dụ:** Chúng ta có các luồng xử lý yêu cầu từ khách hàng trên web (mỗi yêu cầu một luồng). Chúng ta muốn giữ một tổng số đếm xem có bao nhiêu yêu cầu được xử lý mỗi ngày. Khi một luồng hoàn thành yêu cầu, nó sẽ tăng một đối tượng toàn cục `RequestCounter` mà tất cả các luồng cùng chia sẻ và cập nhật. Cuối ngày, chúng ta biết chính xác số lượng yêu cầu đã xử lý. Một giải pháp đơn giản và thanh lịch... Hoặc có thể không?
+
+---
+
+### Ví Dụ Mã Nguồn minh họa
+
+Đoạn mã dưới đây minh họa kịch bản đếm yêu cầu này. Nó tạo ra **50.000 luồng** để cùng cập nhật một biến đếm chia sẻ:
+
+```java
+public class RequestCounter {
+    final static private int NUMTHREADS = 50000;
+    private int count = 0;
+
+    public void inc() {
+        count++;
+    }
+
+    public int getVal() {
+        return this.count;
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        final RequestCounter counter = new RequestCounter();
+        
+        for (int i = 0; i < NUMTHREADS; i++) {
+            // Tạo luồng bằng lambda
+            Runnable thread = () -> { counter.inc(); };
+            new Thread(thread).start();
+        }
+
+        // Tạm dừng 5s để các luồng hoàn thành (cách này chỉ để demo)
+        Thread.sleep(5000);
+        System.out.println("Giá trị kỳ vọng: " + NUMTHREADS + " | Thực tế là: " + counter.getVal());
+    }
+}
+```
+
+Nếu chạy đoạn mã này nhiều lần, bạn sẽ thấy kết quả nhận được hiếm khi đạt đủ **50.000**. Kết quả trung bình thường dừng ở mức 49.995 hoặc tương tự.
+
+---
+
+### Tại sao lại xảy ra điều này?
+
+Câu trả lời nằm ở cách các câu lệnh ngôn ngữ lập trình bậc cao được thực thi ở cấp độ máy (CPU). Để thực hiện tăng một biến đếm (`count++`), CPU phải làm 3 bước:
+
+1. **Load:** Tải giá trị hiện tại từ bộ nhớ vào thanh ghi (register).
+2. **Increment:** Tăng giá trị trong thanh ghi.
+3. **Write:** Ghi kết quả từ thanh ghi trở lại vị trí bộ nhớ ban đầu.
+
+Thao tác tăng này **không phải là một thao tác nguyên tử (atomic operation)** ở cấp độ máy. *(Một thao tác nguyên tử là thao tác không thể bị gián đoạn và một khi đã bắt đầu thì phải chạy đến khi hoàn thành).*
+
+Vì thao tác tăng không nguyên tử, một luồng có thể tải giá trị biến đếm vào thanh ghi CPU từ bộ nhớ, nhưng **trước khi** nó kịp ghi giá trị đã tăng trở lại bộ nhớ, bộ điều phối (scheduler) đã tạm dừng luồng đó và cho phép luồng khác chạy. Luồng thứ hai này lại đọc **giá trị cũ** từ bộ nhớ và ghi giá trị đã tăng của nó vào. Cuối cùng, luồng ban đầu chạy tiếp và ghi đè giá trị của nó vào bộ nhớ — vốn lại trùng với giá trị đã ghi trước đó.
+
+Điều này dẫn đến việc **bị mất cập nhật (lost update)**.
+
+---
+
+### Vùng Găng (Critical Section) & Giải Pháp
+
+Hiện tượng mất cập nhật này được gọi là **Race Condition (Trạng thái đua)**. Trạng thái đua xảy ra bất cứ khi nào nhiều luồng cùng thay đổi một dữ liệu chung.
+
+Trạng thái đua cực kỳ gian xảo vì chúng hiếm khi xuất hiện liên tục và rất khó phát hiện (ví dụ: nếu bạn chạy chỉ 1.000 luồng, bạn có thể nhận được kết quả đúng 9/10 lần). Cùng một đoạn mã, nhưng đôi khi cho ra kết quả khác nhau!
+
+Để khắc phục, chúng ta cần xác định và bảo vệ **Vùng Găng (Critical Section)**:
+
+* **Vùng găng (Critical Section):** Là đoạn mã có nhiệm vụ cập nhật các cấu trúc dữ liệu dùng chung và **bắt buộc phải được thực thi một cách nguyên tử** khi có nhiều luồng cùng truy cập.
+
+#### Cách xử lý trong Java:
+
+Sử dụng từ khóa `synchronized` để biến đoạn mã thành một vùng găng:
+
+**1. Đồng bộ hóa phương thức (Synchronized Method):**
+
+```java
+synchronized public void inc() {
+    count++;
+}
+```
+
+**2. Đồng bộ hóa khối lệnh (Synchronized Block):**
+
+```java
+public void inc() {
+    synchronized(this) {
+        count++;
+    }
+}
+```
+
+#### Cơ chế hoạt động:
+
+Mỗi đối tượng Java có một **khóa giám sát (Monitor Lock / Intrinsic Lock)**.
+
+* Khóa này giống như phòng vệ sinh trên xe khách đường dài — chỉ cho phép một người vào tại một thời điểm, và khóa cửa sẽ chặn những người khác vào cho đến khi người bên trong đi ra.
+* Luồng muốn vào phương thức/khối `synchronized` phải chiếm được Monitor Lock này. Điều này giúp **tuần tự hóa (serialize)** việc thực thi, đảm bảo tại một thời điểm chỉ có 1 luồng duy nhất được can thiệp vào dữ liệu chung.
+
+> **Quy tắc vàng:** Luôn giữ cho các vùng găng (critical sections) nhỏ nhất có thể để tối ưu hóa hiệu năng và khả năng mở rộng (Scalability) của hệ thống.
+
+---
+
+## Bế Tắc (Deadlocks)
+
+Để đảm bảo kết quả chính xác trong mã đa luồng, như đã giải thích ở phần trước, chúng ta phải hạn chế tính không xác định vốn có để tuần tự hóa việc truy cập vào các vùng găng (critical sections). Điều này giúp tránh được **Trạng thái đua (Race conditions)**. Tuy nhiên, nếu không cẩn thận, chúng ta có thể viết mã hạn chế tính không xác định quá mức đến mức chương trình dừng hẳn và **không bao giờ chạy tiếp nữa**. Hiện tượng này được gọi một cách chính thức là **Bế tắc (Deadlock)**.
+
+Một deadlock xảy ra khi hai hoặc nhiều luồng bị chặn vĩnh viễn và không luồng nào có thể tiếp tục. Điều này xảy ra khi các luồng cần quyền truy cập độc quyền vào một tập hợp các tài nguyên chung và các luồng này yêu cầu lấy khóa (lock) theo các thứ tự khác nhau.
+
+**Ví dụ:** Hai luồng cần truy cập độc quyền vào hai vùng găng A và B:
+
+* **Luồng 1:** Lấy khóa cho vùng găng A.
+* **Luồng 2:** Lấy khóa cho vùng găng B.
+* **Luồng 1:** Bị chặn khi cố truy cập vào vùng găng B (vì Luồng 2 đang giữ khóa B).
+* **Luồng 2:** Bị chặn khi cố truy cập vào vùng găng A (vì Luồng 1 đang giữ khóa A).
+* **Cả hai luồng chờ nhau mãi mãi.**
+
+Bế tắc (còn gọi là *"deadly embrace" - cái ôm tử thần*) làm chương trình dừng hoạt động. Không khó để hình dung điều này có thể gây ra những hậu quả nguy hiểm như thế nào. Hãy tưởng tượng bạn đang vui vẻ nhắn tin trong khi chiếc xe tự lái đang đưa bạn đến quán bar, đột nhiên mã nguồn điều khiển xe rơi vào trạng thái deadlock. Kết cục chắc chắn sẽ không tốt đẹp gì.
+
+---
+
+### Bài Toán Triết Học Ăn Tối (Dining Philosophers Problem)
+
+Deadlock có thể xảy ra trong những tình huống tinh vi hơn ví dụ đơn giản ở trên. Ví dụ kinh điển nhất là **Bài toán Triết học Ăn tối**. Câu chuyện như sau:
+
+Có **5 triết gia** ngồi quanh một bàn ăn chung. Là các triết gia, họ dành phần lớn thời gian để suy nghĩ sâu sắc. Giữa những khoảng thời gian suy nghĩ, họ nạp lại năng lượng cho não bằng cách ăn từ đĩa thức ăn đặt trước mặt. Do đó, một triết gia chỉ ở một trong hai trạng thái: đang ăn hoặc đang suy nghĩ (hoặc chuyển tiếp giữa hai trạng thái này).
+
+Ngoài ra, các triết gia đều ngồi rất gần nhau và chia sẻ đũa để ăn. Chỉ có **5 chiếc đũa** trên bàn, được đặt kẽ giữa mỗi triết gia. Khi một triết gia muốn ăn, họ tuân theo quy tắc: **nhặt chiếc đũa bên trái trước, sau đó nhặt chiếc đũa bên phải**. Sau khi ăn xong và sẵn sàng suy nghĩ lại, họ **đặt chiếc đũa bên phải xuống trước, sau đó đặt chiếc đũa bên trái**.
+
+Chúng ta có thể mô hình hóa mỗi triết gia như một **luồng (thread)**.
+
+#### Mã nguồn minh họa luồng Triết gia (Ví dụ 4-1):
+
+```java
+public class Philosopher implements Runnable {
+    private final Object leftChopStick;
+    private final Object rightChopStick;
+
+    Philosopher(Object leftChopStick, Object rightChopStick) {
+        this.leftChopStick = leftChopStick;
+        this.rightChopStick = rightChopStick;
+    }
+
+    private void LogEvent(String event) throws InterruptedException {
+        System.out.println(Thread.currentThread().getName() + " " + event);
+        Thread.sleep(1000);
+    }
+
+    public void run() {
+        try {
+            while (true) {
+                LogEvent(": Thinking deeply");
+                synchronized (leftChopStick) {
+                    LogEvent(": Picked up left chopstick");
+                    synchronized (rightChopStick) {
+                        LogEvent(": Picked up right chopstick – eating");
+                        LogEvent(": Put down right chopstick");
+                    }
+                    LogEvent(": Put down left chopstick. Ate too much");
+                }
+            } // end while
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+}
+```
+
+Các chiếc đũa dùng chung được biểu diễn bởi các đối tượng `Object` trong Java. Vì chỉ một luồng có thể giữ Monitor Lock trên một đối tượng tại một thời điểm, chúng được dùng làm điều kiện để vào vùng găng — nơi các triết gia lấy đũa cần thiết để ăn. Sau khi ăn xong, đũa được trả lại bàn và khóa được giải phóng để triết gia bên cạnh có thể ăn khi sẵn sàng.
+
+#### Khởi chạy các luồng triết gia (Ví dụ 4-2 - Phiên bản bị Deadlock):
+
+```java
+private final static int NUMCHOPSTICKS = 5;
+private final static int NUMPHILOSOPHERS = 5;
+
+public static void main(String[] args) throws Exception {
+    final Philosopher[] ph = new Philosopher[NUMPHILOSOPHERS];
+    Object[] chopSticks = new Object[NUMCHOPSTICKS];
+
+    for (int i = 0; i < NUMCHOPSTICKS; i++) {
+        chopSticks[i] = new Object();
+    }
+
+    for (int i = 0; i < NUMPHILOSOPHERS; i++) {
+        Object leftChopStick = chopSticks[i];
+        Object rightChopStick = chopSticks[(i + 1) % chopSticks.length];
+        ph[i] = new Philosopher(leftChopStick, rightChopStick);
+        Thread th = new Thread(ph[i], "Philosopher " + i);
+        th.start();
+    }
+}
+```
+
+#### Kết quả thực thi:
+
+```text
+Philosopher 3 : Thinking deeply
+Philosopher 4 : Thinking deeply
+Philosopher 0 : Thinking deeply
+Philosopher 1 : Thinking deeply
+Philosopher 2 : Thinking deeply
+Philosopher 3 : Picked up left chopstick
+Philosopher 0 : Picked up left chopstick
+Philosopher 2 : Picked up left chopstick
+Philosopher 4 : Picked up left chopstick
+Philosopher 1 : Picked up left chopstick
+```
+
+Mười dòng đầu ra, sau đó... **không còn gì nữa!** Hệ thống đã rơi vào **Deadlock**. Đây là kiểu deadlock chờ đợi vòng tròn (circular waiting deadlock) điển hình:
+
+1. Tất cả triết gia cùng trải qua một khoảng thời gian suy nghĩ.
+2. Đồng thời, tất cả đều thấy đói và cùng nhặt chiếc đũa bên **trái** của mình lên.
+3. Không triết gia nào có thể ăn (tiếp tục) vì không ai có thể nhặt được chiếc đũa bên **phải** (đã bị người bên cạnh cầm).
+
+---
+
+### Giải Pháp Khắc Phục Deadlock
+
+Thực tế, nếu con người gặp tình huống này, họ sẽ chủ động đặt đũa xuống để đồng nghiệp ăn trước. Trong phần mềm, đôi khi chúng ta làm điều này bằng cách **sử dụng thời gian chờ (timeouts)** cho các thao tác chặn. Khi hết thời gian chờ, luồng sẽ giải phóng vùng găng và thử lại sau. Tuy nhiên, cách này không tối ưu vì các luồng bị chặn làm giảm hiệu năng, và việc thiết lập thời gian chờ timeout là một công việc mang tính cảm tính.
+
+Do đó, cách tốt hơn nhiều là **thiết kế giải pháp không có bế tắc (deadlock-free)**. Với bế tắc chờ đợi vòng tròn, điều này có thể đạt được bằng cách áp dụng **giao thức phân bổ tài nguyên** trên các tài nguyên dùng chung, sao cho các luồng không phải luôn yêu cầu tài nguyên theo cùng một thứ tự.
+
+Trong bài toán triết học ăn tối, chúng ta có thể làm điều này bằng cách yêu cầu **một trong các triết gia phải nhặt chiếc đũa bên PHẢI trước**.
+
+Giả sử chúng ta chỉ định Triết gia 4 làm điều này:
+
+* **Triết gia 0:** Nhặt đũa trái (`chopStick[0]`), sau đó đũa phải (`chopStick[1]`)
+* **Triết gia 1:** Nhặt đũa trái (`chopStick[1]`), sau đó đũa phải (`chopStick[2]`)
+* **Triết gia 2:** Nhặt đũa trái (`chopStick[2]`), sau đó đũa phải (`chopStick[3]`)
+* **Triết gia 3:** Nhặt đũa trái (`chopStick[3]`), sau đó đũa phải (`chopStick[4]`)
+* **Triết gia 4:** Nhặt đũa **phải** (`chopStick[0]`), sau đó đũa **trái** (`chopStick[4]`)
+
+Trong kịch bản này, Triết gia 4 sẽ bị chặn ngay lập tức vì Triết gia 0 đã giữ `chopStick[0]`. Khi Triết gia 4 bị chặn, Triết gia 3 chắc chắn sẽ lấy được `chopStick[4]` và có thể tiến hành ăn.
+
+#### Sửa mã nguồn (Ví dụ 4-3):
+
+```java
+if (i == NUMPHILOSOPHERS - 1) {
+    // Triết gia cuối cùng nhặt chiếc đũa bên PHẢI trước
+    ph[i] = new Philosopher(rightChopStick, leftChopStick);
+} else {
+    // Tất cả các triết gia khác nhặt chiếc đũa bên TRÁI trước
+    ph[i] = new Philosopher(leftChopStick, rightChopStick);
+}
+```
+
+Một cách chính thức hơn, chúng ta đang áp dụng một **thứ tự lấy tài nguyên dùng chung**:
+
+chopStick[0] < chopStick[1] < chopStick[2] < chopStick[3] < chopStick[4]
+
+Điều này có nghĩa là mỗi luồng sẽ luôn cố gắng lấy `chopStick[0]` trước `chopStick[1]`, lấy `chopStick[1]` trước `chopStick[2]`, v.v. Đối với Triết gia 4, điều này có nghĩa là họ sẽ cố gắng lấy `chopStick[0]` trước `chopStick[4]`, từ đó phá vỡ khả năng xảy ra bế tắc chờ đợi vòng tròn.
+
+---
+
+## Trạng Thái Của Luồng (Thread States)
+
+Các hệ thống đa luồng có một **bộ điều phối hệ thống (system scheduler)** nhằm quyết định luồng nào sẽ được chạy và chạy vào lúc nào. Trong Java, bộ điều phối này được biết đến là **bộ điều phối phân ưu tiên theo cơ chế tranh đoạt (preemptive, priority-based scheduler)**. Nói ngắn gọn, nó luôn ưu tiên chọn thực thi luồng có độ ưu tiên cao nhất đang muốn chạy.
+
+Mỗi luồng đều có một mức độ ưu tiên (mặc định là 5, trong khoảng từ 0 đến 10). Một luồng con sẽ kế thừa độ ưu tiên từ luồng cha đã tạo ra nó. Các luồng có độ ưu tiên cao hơn sẽ được điều phối chạy thường xuyên hơn so với các luồng có độ ưu tiên thấp hơn, tuy nhiên trong hầu hết các ứng dụng, việc để tất cả các luồng ở mức ưu tiên mặc định là đã đủ.
+
+Bộ điều phối sẽ luân chuyển các luồng qua **bốn trạng thái riêng biệt** dựa trên hành vi của chúng:
+
+### 1. Khởi Tạo (Created)
+
+Một đối tượng luồng (thread object) đã được khởi tạo nhưng phương thức `start()` của nó chưa được gọi. Ngay khi `start()` được gọi, luồng sẽ chuyển sang trạng thái sẵn sàng chạy (*Runnable*).
+
+### 2. Sẵn Sàng Chạy (Runnable)
+
+Luồng đã sẵn sàng để chạy. Bộ điều phối sẽ chọn luồng để thực thi theo cơ chế **vào trước - ra trước (FIFO)** — tại bất kỳ thời điểm nào, một luồng có thể được cấp phát cho mỗi nhân CPU.
+
+Các luồng sẽ thực thi cho đến khi chúng:
+
+* Bị chặn (ví dụ: chờ ở một câu lệnh `synchronized`).
+* Thực thi một câu lệnh `yield()`, `suspend()`, hoặc `sleep()`.
+* Phương thức `run()` kết thúc.
+* Hoặc bị tranh đoạt quyền thực thi (preempted) bởi bộ điều phối.
+
+> **Tranh đoạt quyền thực thi (Preemption)** xảy ra khi một luồng có độ ưu tiên cao hơn chuyển sang trạng thái Runnable, hoặc khi khoảng thời gian thực thi dành riêng cho hệ thống (được gọi là **lát cắt thời gian - time slice**) bị hết hạn. Việc tranh đoạt dựa trên lát cắt thời gian giúp bộ điều phối đảm bảo rằng tất cả các luồng cuối cùng đều có cơ hội được thực thi — không có luồng "tham lam" nào có thể chiếm dụng hoàn toàn CPU.
+
+### 3. Bị Chặn (Blocked)
+
+Một luồng bị chặn nếu nó đang chờ một khóa (lock), chờ một sự kiện thông báo xảy ra (ví dụ: bộ đếm thời gian `sleep` hết hạn, phương thức `resume()` được gọi), hoặc đang chờ một yêu cầu đọc/ghi đĩa/mạng hoàn thành. Khi sự kiện cụ thể mà luồng đang chờ xảy ra, nó sẽ quay trở lại trạng thái sẵn sàng chạy (*Runnable*).
+
+### 4. Kết Thúc (Terminated)
+
+Phương thức `run()` của luồng đã hoàn thành hoặc luồng đã gọi phương thức `stop()`. Luồng này sẽ không bao giờ được bộ điều phối xếp lịch nữa.
+
+---
+
+### Cơ Chế Hoạt Động Hàng Đợi (Figure 4-5)
+
+Bộ điều phối về bản chất duy trì các **hàng đợi FIFO (FIFO queue)** ở trạng thái *Runnable* cho từng mức độ ưu tiên của luồng:
+
+* **Luồng ưu tiên cao:** Thường được sử dụng để phản hồi các sự kiện khẩn cấp (ví dụ: bộ đếm thời gian cấp cứu) và chỉ thực thi trong một khoảng thời gian rất ngắn.
+* **Luồng ưu tiên thấp:** Được sử dụng cho các tác vụ nền, chạy liên tục (như kiểm tra sự toàn vẹn của tệp trên đĩa bằng cách tính lại mã checksum). Các luồng chạy nền cơ bản chỉ tận dụng những chu kỳ CPU đang rảnh rỗi (idle CPU cycles).
+
+---
+
+### Deadlock Trong Hệ Thống Phân Tán
+
+Bế tắc là một chủ đề phức tạp và phần này mới chỉ lướt qua bề nổi. Bạn sẽ thấy deadlock trong nhiều hệ thống phân tán.
+
+> **Ví dụ:** Một yêu cầu từ người dùng (User request) lấy khóa trên dữ liệu ở bảng `Students` trong CSDL, sau đó cần cập nhật các dòng trong bảng `Classes`. Đồng thời, một yêu cầu khác từ người dùng lại lấy khóa trên bảng `Classes`, sau đó cần cập nhật một số thông tin ở bảng `Students`. Nếu hai yêu cầu này đan xen nhau sao cho mỗi yêu cầu đều nắm giữ một khóa và chờ khóa còn lại, chúng ta sẽ gặp hiện tượng **Deadlock cấp độ CSDL**.
