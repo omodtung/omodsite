@@ -1,0 +1,83 @@
+---
+sidebar_position: 2
+title: Run Claude Code with Gemini API Using Claude Code Router
+---
+
+# Run Claude Code with Gemini API Using Claude Code Router
+
+Claude Code là một coding agent chạy trong terminal, có thể đọc và chỉnh sửa mã nguồn cũng như chạy lệnh trong dự án. Bài viết này hướng dẫn kết nối Claude Code với các model Gemini thông qua **Claude Code Router (`ccr`)** — một công cụ bên thứ ba chuyển tiếp yêu cầu giữa Claude Code và provider bạn cấu hình.
+
+> Đây là cách tích hợp không chính thức, không phải sản phẩm do Anthropic hoặc Google cung cấp. Việc sử dụng Gemini API có thể mất phí và chịu giới hạn quota; hãy kiểm tra chính sách, giá và quota hiện hành của Google trước khi dùng.
+
+## Bạn sẽ cần
+
+1. Node.js và npm đã được cài đặt.
+2. Một Gemini API key tạo từ [Google AI Studio](https://aistudio.google.com/).
+3. Claude Code CLI đã được cài đặt và có thể chạy trên máy.
+
+## 1. Cài đặt Claude Code Router
+
+Mở terminal và cài package toàn cục:
+
+```bash
+npm install -g @musistudio/claude-code-router
+```
+
+## 2. Thêm Gemini provider trong Web UI
+
+Khởi chạy giao diện cấu hình:
+
+```bash
+ccr ui
+```
+
+Mở địa chỉ `http://127.0.0.1:3458` nếu trình duyệt không tự mở. Trong giao diện:
+
+1. Chọn **Providers** và thêm provider Gemini.
+2. Nhập Gemini API key. Base URL thường dùng là `https://generativelanguage.googleapis.com/v1beta`.
+3. Thêm các model ID mà tài khoản của bạn có thể sử dụng, chẳng hạn `gemini-2.5-pro`, `gemini-2.5-flash` hoặc `gemini-2.0-flash`.
+4. Mở **Agent Profiles**, chỉnh sửa profile Claude Code và chọn provider/model Gemini vừa cấu hình.
+5. Đặt tên profile là `code` để có thể gọi bằng lệnh `ccr code`.
+
+Tên mục và các trường cấu hình có thể khác giữa các phiên bản router. Hãy dùng model ID được hỗ trợ trong tài khoản Google AI Studio của bạn; danh sách trên chỉ là ví dụ.
+
+## 3. Khởi chạy Claude Code với profile Gemini
+
+Đi tới thư mục dự án, sau đó chạy:
+
+```bash
+cd /path/to/your-project
+ccr code
+```
+
+Nếu bạn giữ nguyên tên profile mặc định, hãy gọi đúng tên hiển thị trong Web UI, ví dụ:
+
+```bash
+ccr "Claude Code"
+```
+
+Ở lần chạy đầu tiên, Claude Code có thể hỏi bạn có tin cậy thư mục dự án hay không. Chỉ xác nhận nếu bạn đã kiểm tra và tin cậy mã nguồn trong thư mục đó.
+
+Khi khởi động thành công, giao diện sẽ hiển thị profile/model đang sử dụng. Sau đó bạn có thể yêu cầu agent khám phá dự án, hỗ trợ viết test hoặc phân tích mã nguồn.
+
+## Lưu ý về chi phí và API key
+
+- Google AI Studio có thể cung cấp quota miễn phí cho một số model và khu vực, nhưng quota, điều kiện sử dụng và giá có thể thay đổi. Không nên xem việc tích hợp này là luôn miễn phí.
+- Claude Code Router là lớp trung gian của bên thứ ba. Chất lượng, khả năng tương thích và cách hiển thị usage phụ thuộc vào phiên bản router, model và cấu hình provider.
+- API key là thông tin bí mật. Không đưa key vào mã nguồn, commit, ảnh chụp màn hình hoặc nội dung chia sẻ công khai. Chỉ nhập key vào cấu hình trên máy mà bạn tin cậy.
+- Claude Code vốn được thiết kế để làm việc với Anthropic. Dùng model Gemini qua router có thể không tương thích hoàn toàn với mọi tính năng hoặc định dạng yêu cầu.
+
+## Khắc phục sự cố thường gặp
+
+### `Profile not found or is disabled`
+
+Kiểm tra profile trong Web UI đã được bật chưa và tên profile sau `ccr` có khớp chính xác hay không. Ví dụ, profile `code` được gọi bằng `ccr code`.
+
+### API trả về lỗi
+
+1. Xem log của Claude Code Router để biết mã lỗi và thông tin provider.
+2. Kiểm tra API key, model ID và cấu hình base URL.
+3. Kiểm tra quota, giới hạn tốc độ và trạng thái dịch vụ trong Google AI Studio.
+4. Xác nhận máy có thể kết nối tới `generativelanguage.googleapis.com`.
+
+Chúc bạn thiết lập thành công và chọn được model phù hợp cho quy trình phát triển của mình!
